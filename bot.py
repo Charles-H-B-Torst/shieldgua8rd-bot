@@ -2,6 +2,8 @@ import os
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+from google import genai
+from google.genai import types
 
 # Configuração de Logs
 logging.basicConfig(
@@ -9,18 +11,21 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# Pega o Token das variáveis de ambiente do Render (ou usa o seu token direto caso prefira)
-TELEGRAM_TOKEN = os.environ.get("9109101364:AAGErsnxhTa0abSyNe7G_gjLGhbMLcR2be4", "9109101364:AAGErsnxhTa0abSyNe7G_gjLGhbMLcR2be4")
+# Chaves de Acesso via Variáveis de Ambiente
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "9109101364:AAGErsnxhTa0abSyNe7G_gjLGhbMLcR2be4")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6JhqFe4sJ6ToqquSt3beGvUV1IvKBMTGnVmeTb6k0Et1w")
+
+# Inicializa o cliente oficial do Google GenAI
+ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Mensagem de Boas-Vindas
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
-        "🛡️ **Global Anti-Scam Shield**\n\n"
-        "Welcome! I am your real-time security assistant.\n"
-        "Bem-vindo! Eu sou seu assistente de segurança em tempo real.\n\n"
+        "🛡️ **Global Anti-Scam Shield (Powered by Gemini AI)**\n\n"
+        "Welcome! I use advanced AI to analyze suspicious texts, links, and scams in real-time.\n"
+        "Bem-vindo! Uso IA avançada para analisar textos suspeitos, links e golpes em tempo real.\n\n"
         "📥 **How to use / Como usar:**\n"
-        "Forward any suspicious message, text, link, or image to me, and I will analyze if it is a scam or safe!\n\n"
-        "Encaminhe qualquer mensagem, texto, link ou imagem suspeita para mim, e eu analisarei se é um golpe ou seguro!"
+        "Forward any suspicious message or link to me!"
     )
     
     keyboard = [
@@ -31,43 +36,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(welcome_text, parse_mode='Markdown', reply_markup=reply_markup)
 
-# Motor de Análise de Risco
-def analyze_content(text: str) -> dict:
-    text_lower = text.lower()
+# Motor de Análise com Google Gemini
+def analyze_with_gemini(text: str) -> str:
+    prompt = f"""
+    You are an expert cybersecurity and anti-fraud AI assistant. Analyze the following message or text forwarded by a user to check if it's a scam, phishing, social engineering, or a legitimate communication.
     
-    scam_triggers = [
-        "urgent", "urgente", "suspended", "suspensa", "verify your account", "verifique sua conta",
-        "winner", "ganhador", "pix", "transfer", "bank", "banco", "crypto", "investment", "lucro garantido",
-        "click here", "clique aqui", "claim", "resgatar", "limited time", "tempo limitado", "security alert"
-    ]
+    Message to analyze: "{text}"
     
-    risk_score = 0
-
-    for trigger in scam_triggers:
-        if trigger in text_lower:
-            risk_score += 25
-
-    if "http://" in text_lower or "bit.ly" in text_lower or ".xyz" in text_lower or "tinyurl" in text_lower:
-        risk_score += 40
-
-    if risk_score >= 50:
-        return {
-            "title": "🚨 HIGH RISK / ALTO RISCO (GOLPE CONFIRMADO)",
-            "message": "This content shows strong patterns of social engineering, phishing, or fraud.\n\nEste conteúdo apresenta fortes padrões de engenharia social, phishing ou fraude.",
-            "action": "❌ Do NOT click any links, do NOT send money, and block the sender immediately.\n❌ NÃO clique em links, NÃO envie dinheiro e bloqueie o remetente imediatamente."
-        }
-    elif risk_score >= 25:
-        return {
-            "title": "⚠️ WARNING / ATENÇÃO (RISCO MÉDIO)",
-            "message": "Suspicious elements detected. Proceed with extreme caution.\n\nElementos suspeitos detectados. Prossiga com extrema cautela.",
-            "action": "🔍 Verify through official channels before taking any action.\n🔍 Verifique através de canais oficiais antes de tomar qualquer atitude."
-        }
-    else:
-        return {
-            "title": "🟢 SAFE / SEGURO (BAIXO RISCO)",
-            "message": "No obvious scam patterns identified in this text.\n\nNenhum padrão óbvio de golpe identificado neste texto.",
-            "action": "✅ Always maintain basic security practices.\n✅ Mantenha sempre as práticas básicas de segurança."
-        }
+    Provide your response structured clearly with:
+    1. Status: [🚨 HIGH RISK / GOLPE CONFIRMADO, ⚠️ WARNING / RISCO MÉDIO, or 🟢 SAFE / SEGURO]
+    2. Analysis: Why is it dangerous or safe? (Explain briefly in English and Portuguese).
+    3. Action: Clear recommended action for the user.
+    """
+    
+    try:
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        return response.text
+    except Exception as e:
+        logging.error(f"Erro ao chamar o Gemini: {e}")
+        return "⚠️ Erro temporário ao analisar com a IA. Por favor, tente novamente em instantes."
 
 # Processador de Mensagens
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -77,20 +67,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please send a text message or link to analyze.")
         return
 
-    result = analyze_content(user_text)
-    
-    response = (
-        f"{result['title']}\n\n"
-        f"📝 **Analysis / Análise:**\n{result['message']}\n\n"
-        f"💡 **Recommended Action / Ação Recomendada:**\n{result['action']}"
-    )
+    # Mensagem de carregamento
+    processing_msg = await update.message.reply_text("🔍 Analyzing with Gemini AI / Analisando com IA...")
+
+    # Análise real via Gemini
+    ai_verdict = analyze_with_gemini(user_text)
     
     keyboard = [
         [InlineKeyboardButton("🛡️ Protect a Relative / Proteger um Familiar", callback_data='premium_info')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(response, parse_mode='Markdown', reply_markup=reply_markup)
+    await context.bot.edit_message_text(
+        chat_id=update.effective_chat.id,
+        message_id=processing_msg.message_id,
+        text=ai_verdict,
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
 
 # Tratamento de Botões
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -100,15 +94,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == 'premium_info':
         premium_text = (
             "💎 **Premium Plan / Plano Premium**\n\n"
-            "• Unlimited daily checks / Checagens diárias ilimitadas\n"
-            "• Real-time audio and image scan / Varredura de áudio e imagem\n"
+            "• Unlimited AI checks / Checagens ilimitadas por IA\n"
+            "• Real-time image & audio scan / Varredura de imagem e áudio\n"
             "• Family Protection Alerts / Alertas de Proteção Familiar\n\n"
-            "Price: **$2.99 / month**\n\n"
-            "To activate, contact support or click below to subscribe."
+            "Price: **$2.99 / month**"
         )
         await query.message.reply_text(premium_text, parse_mode='Markdown')
     elif query.data == 'help_info':
-        await query.message.reply_text("Forward any message directly to this chat to receive a security audit.")
+        await query.message.reply_text("Forward any message directly to this chat to receive a security audit powered by Google Gemini.")
 
 # Inicialização
 if __name__ == '__main__':
@@ -118,5 +111,5 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    print("Bot rodando com sucesso na nuvem...")
+    print("Bot com Gemini AI rodando na nuvem com sucesso...")
     app.run_polling()
